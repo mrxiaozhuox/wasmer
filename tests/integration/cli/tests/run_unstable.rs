@@ -4,6 +4,7 @@
 //! before running any of these tests.
 use std::{
     io::Read,
+    path::Path,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -12,19 +13,34 @@ use assert_cmd::{assert::Assert, prelude::OutputAssertExt};
 use predicates::str::contains;
 use reqwest::{blocking::Client, IntoUrl};
 use tempfile::TempDir;
-use wasmer_integration_tests_cli::get_wasmer_path;
 
-const RUST_LOG: &str = "info,wasmer_wasi::runners=debug,virtual_fs::trace_fs=trace";
+const RUST_LOG: &str = "info,wasmer_wasix::runners=debug,virtual_fs::trace_fs=trace";
 
-fn wasmer_run_unstable() -> std::process::Command {
+/// Get a [`std::process::Command`] that will execute the `wasmer` binary.
+fn wasmer() -> std::process::Command {
     let mut cmd = std::process::Command::new("cargo");
+
+    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap();
+    assert!(project_root.join(".git").is_dir());
+    let cli_cargo_toml = project_root.join("lib").join("cli").join("Cargo.toml");
+
     cmd.arg("run")
         .arg("--quiet")
-        .arg("--package=wasmer-cli")
+        .arg("--manifest-path")
+        .arg(cli_cargo_toml)
         .arg("--features=singlepass")
-        .arg("--")
-        .arg("run-unstable");
-    cmd.env("RUST_LOG", RUST_LOG);
+        .arg("--");
+    cmd.env("RUST_LOG", RUST_LOG).env("RUST_BACKTRACE", "1");
+    cmd
+}
+
+/// Get a [`std::process::Command`] that will run `wasmer run-unstable`.
+fn wasmer_run_unstable() -> std::process::Command {
+    let mut cmd = wasmer();
+    cmd.arg("run-unstable");
     cmd
 }
 
@@ -85,6 +101,28 @@ mod webc_on_disk {
             .assert();
 
         assert.success().stdout(contains("Hello, World!"));
+    }
+
+    /// See https://github.com/wasmerio/wasmer/issues/3794
+    #[test]
+    #[cfg_attr(
+        all(target_env = "musl", target_os = "linux"),
+        ignore = "wasmer run-unstable segfaults on musl"
+    )]
+    fn issue_3794_unable_to_mount_relative_paths() {
+        let temp = TempDir::new().unwrap();
+        std::fs::copy(fixtures::python(), temp.path().join("python.webc")).unwrap();
+
+        let assert = wasmer_run_unstable()
+            .arg("wasmer/wapm2pirita@1.0.31")
+            .arg(format!("--mapdir=.:{}", temp.path().display()))
+            .arg("--")
+            .arg("dump")
+            .arg("manifest")
+            .arg("./python.webc")
+            .assert();
+
+        assert.success().stdout(contains("\"name\": \"python\""));
     }
 
     #[test]
@@ -179,8 +217,6 @@ mod webc_on_disk {
 }
 
 mod wasm_on_disk {
-    use std::process::Command;
-
     use super::*;
     use predicates::str::contains;
 
@@ -234,7 +270,7 @@ mod wasm_on_disk {
         let dest = temp.path().join("qjs.wasmu");
         let qjs = fixtures::qjs();
         // Make sure it is compiled
-        Command::new(get_wasmer_path())
+        wasmer()
             .arg("compile")
             .arg("-o")
             .arg(&dest)
