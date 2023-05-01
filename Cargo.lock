@@ -5742,6 +5742,7 @@ dependencies = [
  "tracing-subscriber 0.2.25",
  "tracing-wasm",
  "typetag",
+ "url",
  "urlencoding",
  "virtual-fs",
  "virtual-net",
